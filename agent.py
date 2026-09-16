@@ -14,9 +14,10 @@ from ollama import ResponseError, chat
 from pypdf import PdfReader
 
 
-# STEP 1. 모델, 출력 양식, 에이전트 규칙을 정의합니다.
-# 이 값들을 파일 위쪽에 모아 두면 학습자가 에이전트의 입력 계약을 먼저 확인하고,
-# 모델이나 출력 양식을 바꿀 때 실행 로직 전체를 찾지 않아도 됩니다.
+# STEP 1. 모델에게 맡길 일과 결과 양식을 정합니다.
+# 모델은 문서를 해석하고, CSV_HEADERS는 결과가 따라야 할 공통 형식을 정합니다.
+
+# 사용할 언어모델입니다. 본 예제는 사용자의 컴퓨터에서 직접 서빙하는 로컬 언어 모델을 사용합니다.
 DEFAULT_MODEL = "qwen3:4b"
 DATETIME_FORMAT = "%Y-%m-%d %H:%M"
 CSV_HEADERS = [
@@ -26,6 +27,9 @@ CSV_HEADERS = [
     "source_pdf",
 ]
 MAX_AGENT_TURNS = 5
+
+# 언어 모델에게 제공되는 프롬프트입니다.
+# 목표와 판단 규칙을 전달하고, PDF를 읽은 뒤에만 CSV 쓰기 툴을 고르도록 안내합니다.
 SYSTEM_PROMPT = """당신은 발전기 정비 공지 PDF를 정형 데이터로 바꾸는 에이전트입니다.
 
 규칙:
@@ -41,19 +45,20 @@ SYSTEM_PROMPT = """당신은 발전기 정비 공지 PDF를 정형 데이터로 
 
 def pause_for_user(auto: bool, message: str) -> None:
     """Pause a teaching-mode run until the learner presses Enter."""
-    # 기본 모드는 발표자가 로그를 설명할 시간을 주고, --auto일 때만 멈춤을 건너뜁니다.
+    # [예제와 무관합니다, 무시해주세요] 기본 모드는 발표자가 로그를 설명할 시간을 주고, --auto일 때만 멈춤을 건너뜁니다.
     if not auto:
         input(f"\n[Enter] {message}")
 
 
 def print_learning_step(number: int, code_step: int, title: str) -> None:
     """Connect an observable demo action to the numbered code block."""
-    # 숫자는 프로그램의 내부 판단이 아니라 학습자가 따라 읽을 순서를 뜻합니다.
+    # [예제와 무관합니다, 무시해주세요] 숫자는 프로그램의 내부 판단이 아니라 학습자가 따라 읽을 순서를 뜻합니다.
     print(f"\n[학습 {number}/5 | 코드 STEP {code_step}: {title}]")
 
 
-# STEP 2. 에이전트가 사용할 PDF 읽기 툴의 실제 동작입니다.
-# 모델에 범용 파일 읽기 권한을 주지 않고, 지정 폴더의 PDF만 읽는 좁은 도구를 줍니다.
+# STEP 2. PDF 내용을 모델에 전달할 수 있도록 읽기 툴을 정의합니다.
+# 모델은 파일을 직접 열지 않고 이 툴의 호출을 요청합니다.
+# Python은 요청된 경로를 확인한 뒤 허용된 PDF의 텍스트만 추출합니다.
 def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object]:
     """Extract page-marked text from one PDF inside the allowed directory."""
     if not isinstance(pdf_path, str):
@@ -70,7 +75,6 @@ def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object
     if not candidate.is_file():
         return {"status": "error", "error": "PDF 파일을 찾을 수 없습니다."}
 
-    # pypdf는 페이지의 텍스트 레이어를 읽습니다. 이미지뿐인 스캔 PDF는 OCR이 필요합니다.
     try:
         reader = PdfReader(candidate)
         page_blocks = []
@@ -99,8 +103,8 @@ def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object
     }
 
 
-# STEP 3. 에이전트가 사용할 CSV 쓰기 툴의 실제 동작입니다.
-# 언어 모델은 의미를 해석하지만, 날짜 형식과 쓰기 조건은 결정적인 코드로 다시 검증합니다.
+# STEP 3. 모델이 제안한 정비 정보를 CSV에 저장하는 툴을 정의합니다.
+# 모델의 해석이 곧바로 저장되지는 않습니다. Python이 필수 값, 날짜와 출처를 검증한 뒤 기록하도록 코드 기반의 안전장치를 둡니다.
 def append_maintenance_csv(
     csv_path: Path,
     allowed_sources: set[str],
@@ -119,7 +123,7 @@ def append_maintenance_csv(
     maintenance_end = maintenance_end.strip()
     source_pdf = source_pdf.strip()
 
-    # 비어 있는 값, 잘못된 출처, 날짜 순서를 차례로 검사해 오염된 행의 저장을 막습니다.
+    # 모델이 값을 빠뜨리거나 다른 PDF를 출처로 적어도 잘못된 행은 저장하지 않습니다.
     if not generator_name:
         return {"status": "error", "error": "발전기 이름이 필요합니다."}
     if not maintenance_start or not maintenance_end:
@@ -150,7 +154,7 @@ def append_maintenance_csv(
         "source_pdf": source_pdf,
     }
 
-    # 기존 파일의 헤더가 예상과 다르면 덧붙이지 않습니다. 같은 행은 중복 저장하지 않습니다.
+    # 기존 결과의 형식이 다르거나 같은 PDF의 기록이 이미 있으면 새 행을 추가하지 않습니다.
     if csv_path.exists() and csv_path.stat().st_size > 0:
         try:
             with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -168,7 +172,6 @@ def append_maintenance_csv(
         except OSError as exc:
             return {"status": "error", "error": f"기존 CSV 읽기 실패: {exc}"}
 
-    # utf-8-sig는 Windows의 스프레드시트 프로그램에서도 한글을 쉽게 열 수 있게 합니다.
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
     try:
@@ -185,7 +188,7 @@ def append_maintenance_csv(
 
 def _print_tool_result(tool_name: str, result_text: str) -> None:
     """Print an observable, bounded view of a tool result."""
-    # 진행 중에는 도구 실행의 핵심 결과만 보여주고 원문 미리보기는 문서 끝으로 보냅니다.
+    # [예제와 무관합니다, 무시해주세요] 시연 화면에 툴 결과를 짧게 보여주는 출력 코드입니다.
     try:
         result = json.loads(result_text)
     except json.JSONDecodeError:
@@ -208,8 +211,7 @@ def _print_tool_result(tool_name: str, result_text: str) -> None:
 
 def _visible_model_content(content: str) -> str:
     """Return only the user-facing portion of a model response."""
-    # 일부 로컬 모델은 think=False여도 내부 분석 뒤에 </think> 구분자를 남깁니다.
-    # 데모 화면에는 그 앞부분을 노출하지 않고, 구분자 뒤의 최종 답변만 표시합니다.
+    # [예제와 무관합니다, 무시해주세요] 시연 화면에는 모델의 최종 답변만 표시합니다.
     if "</think>" in content:
         content = content.rsplit("</think>", maxsplit=1)[1]
     return content.strip()
@@ -217,13 +219,15 @@ def _visible_model_content(content: str) -> str:
 
 def print_document_details(details: list[str]) -> None:
     """Show bounded tool details after the learning narrative ends."""
+    # [예제와 무관합니다, 무시해주세요] 긴 원문과 인자는 문서 처리 후에 모아 보여줍니다.
     if details:
         print("\n[상세 로그 | 도구 인자와 PDF 원문 미리보기]")
         print("\n\n".join(details))
 
 
-# STEP 4. 모델이 툴을 고르고 결과를 다시 관찰하는 에이전트 반복문입니다.
-# 이 함수가 예제의 핵심입니다. 모델은 다음 행동을 고르고, Python은 허용된 행동만 실행합니다.
+# STEP 4. 모델의 선택과 Python의 툴 실행을 실제로 연결하는 부분입니다.
+# 모델에 목표와 툴을 제공하고, 모델이 선택한 툴을 실행한 뒤 결과를 다시 모델에 전달합니다.
+# 모델은 각 단계의 결과를 프롬프트로 받아본 다음 행동을 정합니다. 이 구조가 본 예제의 에이전틱 구조의 핵심입니다.
 def run_agent_for_pdf(
     pdf_path: Path,
     input_dir: Path,
@@ -233,14 +237,15 @@ def run_agent_for_pdf(
     chat_fn: Callable[..., object] | None = None,
 ) -> bool:
     """Run a bounded model-tool loop for one PDF and report write success."""
-    # 테스트에서는 가짜 chat 함수를 주입하고, 실제 실행에서는 로컬 Ollama를 사용합니다.
     call_model = chat_fn or chat
     current_pdf = pdf_path.resolve()
     state: dict[str, str | None] = {"extracted_source": None}
     saved = False
     details: list[str] = []
 
-    # Ollama가 함수 설명과 인자 형식을 읽을 수 있도록, 실제 툴을 내부 함수로 감쌉니다.
+    # STEP 2·3의 함수를 모델이 선택할 수 있는 툴 형태로 연결합니다.
+    # Ollama는 아래 함수의 이름·설명·인자를 모델에 알려주고, 모델은 호출할 툴과 인자만 제안합니다.
+    # 실제 경로 확인과 파일 읽기·쓰기는 모델이 아니라 이 Python 함수들이 수행합니다.
     def extract_pdf_text_tool(pdf_path: str) -> str:
         """Extract text from a PDF in the selected input folder.
 
@@ -281,7 +286,7 @@ def run_agent_for_pdf(
         Returns:
             JSON describing whether the row was saved, duplicated, or rejected.
         """
-        # 모델이 순서를 건너뛰더라도 PDF 원문을 읽기 전에는 CSV를 쓸 수 없습니다.
+        # 모델이 CSV 쓰기를 먼저 요청해도, 현재 PDF의 읽기 툴이 성공한 뒤에만 저장하도록 제한합니다.
         if state["extracted_source"] != pdf_path.name:
             return json.dumps(
                 {"status": "error", "error": "CSV 저장 전에 PDF 추출 툴을 사용해야 합니다."},
@@ -304,7 +309,7 @@ def run_agent_for_pdf(
         "append_maintenance_csv": append_maintenance_csv_tool,
     }
     tool_list = list(available_tools.values())
-    # 대화 기록에는 목표뿐 아니라 매 툴 결과도 누적됩니다. 모델은 다음 턴에 그 결과를 관찰합니다.
+    # 첫 메시지에 목표를 넣고, 이후 모델의 선택과 툴 결과를 같은 대화 기록에 이어 붙입니다.
     messages: list[object] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -324,7 +329,10 @@ def run_agent_for_pdf(
     print("모델은 PDF를 직접 읽을 수 없으므로 PDF 읽기 툴을 선택해야 합니다.")
     pause_for_user(auto, "로컬 모델에 작업을 전달합니다...")
 
-    # 무한 반복을 막기 위해 턴 수를 제한한 작은 에이전트 루프입니다.
+    # 이 for문은 에이전트가 다음 행동을 결정하는 핵심 반복문입니다.
+    # 매 턴 모델에 대화 기록과 툴 목록을 보내고, 응답에서 툴 호출 요청을 확인합니다.
+    # 아래에서 툴을 실행하고 결과를 기록하면 다음 턴의 모델이 그 결과를 보고 이어서 판단합니다.
+    # MAX_AGENT_TURNS는 이 과정을 끝없이 반복하지 않도록 제한합니다.
     for _turn in range(MAX_AGENT_TURNS):
         response = call_model(
             model=model,
@@ -430,7 +438,7 @@ def run_agent_for_pdf(
             elif tool_name == "append_maintenance_csv":
                 print("CSV 쓰기 툴의 검증을 통과하지 못해 저장하지 않았습니다.")
 
-            # 실행 결과를 tool 메시지로 넣어야 모델이 성공/오류를 보고 다음 행동을 정할 수 있습니다.
+            # 툴 결과를 대화에 넣어야 모델이 성공이나 오류를 보고 다음 행동을 정할 수 있습니다.
             messages.append(
                 {
                     "role": "tool",
@@ -448,8 +456,8 @@ def run_agent_for_pdf(
     return False
 
 
-# STEP 5. 폴더의 PDF를 모아 하나씩 에이전트에게 맡깁니다.
-# 명령행 옵션을 읽고 입력을 검증하는 바깥쪽 흐름이며, PDF마다 대화 상태를 새로 시작합니다.
+# STEP 5. 입력 폴더의 PDF마다 위 에이전트 반복문을 새로 실행합니다.
+# [예제와 무관합니다, 무시해주세요] 인자 파싱과 실행 안내는 터미널 실습을 위한 보조 코드입니다.
 def main(argv: list[str] | None = None) -> int:
     """Process every PDF in a directory through the local agent."""
     parser = argparse.ArgumentParser(
@@ -473,7 +481,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[오류] 입력 폴더를 찾을 수 없습니다: {input_dir}")
         return 2
 
-    # 실행 순서를 예측할 수 있도록 파일명을 기준으로 정렬합니다.
     pdf_files = sorted(
         (path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"),
         key=lambda path: path.name.lower(),
@@ -500,7 +507,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.auto:
         print("--auto 모드에서는 같은 학습 설명을 표시하지만 Enter 대기는 생략합니다.")
 
-    # 한 PDF의 실패가 이미 저장된 다른 결과를 지우지 않도록 문서별 성공 수를 집계합니다.
     succeeded = 0
     try:
         pause_for_user(args.auto, "준비되었다면 첫 번째 문서를 처리합니다...")
