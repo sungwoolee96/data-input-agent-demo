@@ -253,6 +253,31 @@ def test_run_agent_for_pdf_executes_real_tools_in_sequence(tmp_path: Path) -> No
     assert rows[0]["maintenance_end"] == "2026-10-16 18:00"
 
 
+def test_run_agent_for_pdf_hides_reasoning_prefix_from_final_output(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path)
+    fake_chat = FakeChat(
+        [response_with(content="내부 분석은 표시하면 안 됩니다.</think>\n저장을 완료했습니다.")]
+    )
+
+    run_agent_for_pdf(
+        pdf_path=pdf_path,
+        input_dir=tmp_path,
+        csv_path=tmp_path / "output.csv",
+        model="test-model",
+        auto=True,
+        chat_fn=fake_chat,
+    )
+
+    output = capsys.readouterr().out
+    assert "내부 분석" not in output
+    assert "</think>" not in output
+    assert "저장을 완료했습니다." in output
+
+
 def test_main_rejects_missing_input_directory(tmp_path: Path, capsys) -> None:
     exit_code = main([str(tmp_path / "missing"), "--auto"])
 

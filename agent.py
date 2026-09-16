@@ -193,6 +193,15 @@ def _print_tool_result(tool_name: str, result_text: str) -> None:
     print(f"[툴 결과] {result.get('error', result_text)}")
 
 
+def _visible_model_content(content: str) -> str:
+    """Return only the user-facing portion of a model response."""
+    # 일부 로컬 모델은 think=False여도 내부 분석 뒤에 </think> 구분자를 남깁니다.
+    # 데모 화면에는 그 앞부분을 노출하지 않고, 구분자 뒤의 최종 답변만 표시합니다.
+    if "</think>" in content:
+        content = content.rsplit("</think>", maxsplit=1)[1]
+    return content.strip()
+
+
 # STEP 4. 모델이 툴을 고르고 결과를 다시 관찰하는 에이전트 반복문입니다.
 # 이 함수가 예제의 핵심입니다. 모델은 다음 행동을 고르고, Python은 허용된 행동만 실행합니다.
 def run_agent_for_pdf(
@@ -297,7 +306,7 @@ def run_agent_for_pdf(
 
         # 툴 호출이 없는 응답은 모델이 작업을 끝냈다는 신호로 사용합니다.
         if not tool_calls:
-            final_text = (message.content or "").strip()
+            final_text = _visible_model_content(message.content or "")
             print(f"\n[에이전트 최종 답변] {final_text or '응답 없음'}")
             return saved
 
