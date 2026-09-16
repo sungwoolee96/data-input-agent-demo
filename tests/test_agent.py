@@ -340,7 +340,9 @@ def test_teaching_log_explains_tool_flow_before_each_pause(
 
     first_prompt, first_log = snapshots[0]
     assert "STEP 4" in first_log
-    assert "직접 읽을 수 없" in first_log
+    assert "extract_pdf_text" in first_log
+    assert "append_maintenance_csv" in first_log
+    assert "PDF를 읽어" in first_log
     assert "모델에 작업" in first_prompt
     read_prompt, read_log = next(
         (prompt, log) for prompt, log in snapshots if "이 툴을 실행" in prompt
@@ -350,7 +352,8 @@ def test_teaching_log_explains_tool_flow_before_each_pause(
     pdf_prompt, pdf_log = next(
         (prompt, log) for prompt, log in snapshots if "추출 결과" in prompt
     )
-    assert "아직 CSV" in pdf_log
+    assert "Hanbit unit two maintenance notice" in pdf_log
+    assert "아직 CSV" not in pdf_log
     assert "모델" in pdf_prompt
     write_prompt, write_log = next(
         (prompt, log) for prompt, log in snapshots if "CSV 쓰기 툴" in prompt
@@ -358,8 +361,13 @@ def test_teaching_log_explains_tool_flow_before_each_pause(
     assert "STEP 4" in write_log
     assert "한빛복합 2호기" in write_log
     assert "2026-10-14 09:00" in write_log
-    assert "아직 저장되지 않았" in write_log
+    assert "로컬 모델이 CSV 쓰기 툴을 호출" in write_log
+    assert "검증한 뒤 저장" in write_log
+    assert "아직 저장되지 않았" not in write_log
     assert "append_maintenance_csv" in write_log
+    assert write_log.index("[툴 호출] append_maintenance_csv") < write_log.index(
+        "로컬 모델이 CSV 쓰기 툴을 호출"
+    )
     saved_log = next(
         log for prompt, log in snapshots if "툴 결과를 모델" in prompt
     )
@@ -368,7 +376,7 @@ def test_teaching_log_explains_tool_flow_before_each_pause(
     assert "CSV 저장 완료" in saved_log
 
 
-def test_raw_pdf_preview_is_below_learning_flow(
+def test_raw_pdf_text_is_shown_before_model_reads_it_and_details_are_explained(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     pdf_path = tmp_path / "notice.pdf"
@@ -388,10 +396,31 @@ def test_raw_pdf_preview_is_below_learning_flow(
     before_next_model = next(
         log for prompt, log in snapshots if "추출 결과" in prompt
     )
-    assert "Generator Alpha maintenance" not in before_next_model
+    assert "추출된 내용은 아래와 같습니다" in before_next_model
+    assert "Generator Alpha maintenance" in before_next_model
     final_output = capsys.readouterr().out
     assert final_output.index("[에이전트 최종 답변]") < final_output.index("[상세 로그")
+    assert "아래는 본 에이전트가 전체 과정을 수행하면서 생성한 로그입니다." in final_output
     assert "Generator Alpha maintenance" in final_output
+
+
+def test_model_progress_is_visible_before_each_slow_call(tmp_path: Path, capsys) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path)
+    seen_at_calls = []
+    fake_chat = FakeChat([
+        response_with(tool_call("extract_pdf_text", {"pdf_path": str(pdf_path)})),
+        response_with(content="확인 완료"),
+    ])
+
+    def capture_chat(**kwargs):
+        seen_at_calls.append(capsys.readouterr().out)
+        return fake_chat(**kwargs)
+
+    run_agent_for_pdf(pdf_path, tmp_path, tmp_path / "out.csv", "test-model", True, capture_chat)
+
+    assert len(seen_at_calls) == 2
+    assert all("로컬 언어 모델 추론 중" in log for log in seen_at_calls)
 
 
 def test_auto_mode_prints_learning_log_without_enter(tmp_path: Path, capsys) -> None:
@@ -538,7 +567,12 @@ def test_main_introduces_files_and_learning_goal_before_processing(
     assert "Enter" in first_output
     assert "자율적으로" in first_output
     assert "PDF를 열어" in first_output
+    assert "[모델에 전달하는 공통 규칙" in first_output
+    assert "반드시 extract_pdf_text로 PDF 원문을 읽은 뒤 판단합니다." in first_output
     assert first_output.index("1. a.pdf") < first_output.index("2. b.pdf")
+    assert "이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우입니다." not in first_output
+    assert "이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우입니다." in observed[1][1]
+    assert "[인사이트]" in capsys.readouterr().out
 
 
 def test_main_handles_interrupt_at_new_intro_pause(tmp_path: Path, monkeypatch, capsys) -> None:

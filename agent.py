@@ -221,6 +221,7 @@ def print_document_details(details: list[str]) -> None:
     """Show bounded tool details after the learning narrative ends."""
     # [예제와 무관합니다, 무시해주세요] 긴 원문과 인자는 문서 처리 후에 모아 보여줍니다.
     if details:
+        print("\n아래는 본 에이전트가 전체 과정을 수행하면서 생성한 로그입니다.")
         print("\n[상세 로그 | 도구 인자와 PDF 원문 미리보기]")
         print("\n\n".join(details))
 
@@ -326,7 +327,10 @@ def run_agent_for_pdf(
     print(f"[문서] {pdf_path.name}")
     print_learning_step(1, 4, "에이전트 반복문")
     print("로컬 언어 모델에 PDF 처리 목표와 사용할 수 있는 툴 목록을 전달합니다.")
-    print("모델은 PDF를 직접 읽을 수 없으므로 PDF 읽기 툴을 선택해야 합니다.")
+    print("처리 목표: PDF를 읽어 발전기와 정비 시작·종료 시각을 찾아 CSV로 정리합니다.")
+    print("사용 가능한 툴:")
+    print("  extract_pdf_text: 허용된 PDF의 내용을 텍스트로 읽습니다.")
+    print("  append_maintenance_csv: 모델이 찾은 값을 검증해 CSV에 저장합니다.")
     pause_for_user(auto, "로컬 모델에 작업을 전달합니다...")
 
     # 이 for문은 에이전트가 다음 행동을 결정하는 핵심 반복문입니다.
@@ -334,6 +338,7 @@ def run_agent_for_pdf(
     # 아래에서 툴을 실행하고 결과를 기록하면 다음 턴의 모델이 그 결과를 보고 이어서 판단합니다.
     # MAX_AGENT_TURNS는 이 과정을 끝없이 반복하지 않도록 제한합니다.
     for _turn in range(MAX_AGENT_TURNS):
+        print("\n[모델] 로컬 언어 모델 추론 중...", flush=True)
         response = call_model(
             model=model,
             messages=messages,
@@ -362,6 +367,7 @@ def run_agent_for_pdf(
             if tool_name == "extract_pdf_text" and valid_call:
                 print_learning_step(2, 2, "PDF 읽기 툴")
                 print("모델이 PDF 읽기 툴을 선택했습니다. Python이 현재 문서인지 확인한 뒤 텍스트를 추출합니다.")
+                print(f"\n[툴 호출] {tool_name}")
             elif tool_name == "append_maintenance_csv" and valid_call:
                 print_learning_step(3, 4, "모델의 정보 해석")
                 print("로컬 언어 모델이 PDF에서 다음 핵심 정보를 추출했다고 제안했습니다.")
@@ -373,8 +379,11 @@ def run_agent_for_pdf(
                 ):
                     value = arguments.get(field)
                     print(f"  {label}: {value if isinstance(value, str) else '(값 없음 또는 형식 오류)'}")
-                print("이 값은 아직 저장되지 않았습니다. CSV 쓰기 툴이 검증한 뒤 저장합니다.")
-            print(f"\n[툴 호출] {tool_name}")
+                print(f"\n[툴 호출] {tool_name}")
+                print("로컬 모델이 CSV 쓰기 툴을 호출했습니다.")
+                print("CSV 쓰기 툴은 이 값이 요구사항에 맞는지 검증한 뒤 저장합니다.")
+            else:
+                print(f"\n[툴 호출] {tool_name}")
             details.append(f"{tool_name} 인자:\n{json.dumps(arguments, ensure_ascii=False, indent=2)}")
             if tool_name == "append_maintenance_csv" and valid_call:
                 pause_for_user(auto, "append_maintenance_csv CSV 쓰기 툴을 실행합니다...")
@@ -420,12 +429,13 @@ def run_agent_for_pdf(
 
             if tool_name == "extract_pdf_text" and result_data.get("status") == "ok":
                 preview = str(result_data["text"])
-                if len(preview) > 600:
-                    preview = preview[:600].rstrip() + "\n... (미리보기 생략)"
+                if len(preview) > 1200:
+                    preview = preview[:1200].rstrip() + "\n... (이하 생략)"
                 details.append(f"PDF 텍스트 미리보기:\n{preview}")
+                print("\n추출된 내용은 아래와 같습니다:")
+                print(preview)
                 print("\n에이전트가 호출한 툴을 통해 PDF 내용이 텍스트로 추출됐습니다.")
                 print("이제 로컬 언어 모델은 이 내용에서 발전기와 정비 기간을 해석합니다.")
-                print("아직 CSV에는 아무것도 저장되지 않았습니다.")
             elif tool_name == "append_maintenance_csv" and result_data.get("status") in {
                 "saved", "duplicate"
             }:
@@ -504,13 +514,17 @@ def main(argv: list[str] | None = None) -> int:
     print("먼저 agent.py 스크립트와 첫 번째 PDF를 열어 확인해보세요.")
     print("지금은 학습을 위해 행동 사이를 Enter로 명시적으로 나누어 보여줍니다.")
     print("잘 설계된 에이전틱 시스템의 목표는 이러한 판단과 툴 사용을 자율적으로 이어가는 것입니다.")
+    print("\n[모델에 전달하는 공통 규칙 | 코드 STEP 1]")
+    print(SYSTEM_PROMPT.strip())
     if args.auto:
         print("--auto 모드에서는 같은 학습 설명을 표시하지만 Enter 대기는 생략합니다.")
 
     succeeded = 0
     try:
         pause_for_user(args.auto, "준비되었다면 첫 번째 문서를 처리합니다...")
-        for pdf_path in pdf_files:
+        for number, pdf_path in enumerate(pdf_files, start=1):
+            if number == 2:
+                print("\n이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우입니다.")
             try:
                 document_succeeded = run_agent_for_pdf(
                     pdf_path=pdf_path,
@@ -543,6 +557,11 @@ def main(argv: list[str] | None = None) -> int:
         print("CSV를 열어 서로 다른 PDF가 같은 열 구조로 정리됐는지 확인해보세요.")
     else:
         print("저장된 CSV가 없습니다. 위의 문서별 결과와 Ollama 실행 상태를 확인해보세요.")
+    if succeeded:
+        print("\n[인사이트]")
+        print("1. 에이전틱 워크플로우는 형식이 다른 문서에서도 모델의 해석을 활용해 같은 목표의 결과물을 만듭니다.")
+        print("2. 모델에 제공하는 툴은 할 수 있는 작업을 열어주면서, 그 작업과 데이터에 대한 권한도 제한합니다.")
+        print("3. 간단한 작업은 로컬 모델로 실행할 수 있습니다. 모델 호출 부분을 분리하면 OpenAI·Anthropic 등 다른 제공자로 바꾸기도 쉽습니다.")
     return 0 if succeeded else 1
 
 
