@@ -1,9 +1,16 @@
 import csv
 from pathlib import Path
+from types import SimpleNamespace
 
 from reportlab.pdfgen import canvas
 
-from agent import append_maintenance_csv, extract_pdf_text
+from agent import (
+    append_maintenance_csv,
+    extract_pdf_text,
+    main,
+    pause_for_user,
+    run_agent_for_pdf,
+)
 
 
 def make_text_pdf(path: Path, text: str = "Generator Alpha maintenance") -> None:
@@ -152,3 +159,109 @@ def test_append_maintenance_csv_skips_exact_duplicate(tmp_path: Path) -> None:
     assert second == {"status": "duplicate", "source_pdf": "notice.pdf"}
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         assert len(list(csv.DictReader(handle))) == 1
+
+
+def test_pause_for_user_waits_in_teaching_mode(monkeypatch) -> None:
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+
+    pause_for_user(auto=False, message="다음 단계")
+
+    assert prompts == ["\n[Enter] 다음 단계"]
+
+
+def test_pause_for_user_does_not_wait_in_auto_mode(monkeypatch) -> None:
+    def fail_if_called(_prompt: str) -> str:
+        raise AssertionError("automatic mode must not call input")
+
+    monkeypatch.setattr("builtins.input", fail_if_called)
+
+    pause_for_user(auto=True, message="다음 단계")
+
+
+def tool_call(name: str, arguments: dict[str, str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
+def response_with(*calls: SimpleNamespace, content: str = "") -> SimpleNamespace:
+    return SimpleNamespace(
+        message=SimpleNamespace(content=content, tool_calls=list(calls)),
+    )
+
+
+class FakeChat:
+    def __init__(self, responses: list[SimpleNamespace]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict] = []
+
+    def __call__(self, **kwargs) -> SimpleNamespace:
+        captured = dict(kwargs)
+        captured["messages"] = list(kwargs["messages"])
+        self.calls.append(captured)
+        return self.responses.pop(0)
+
+
+def test_run_agent_for_pdf_executes_real_tools_in_sequence(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    csv_path = tmp_path / "output" / "maintenance_schedule.csv"
+    make_text_pdf(pdf_path, "Hanbit unit two maintenance notice")
+    fake_chat = FakeChat(
+        [
+            response_with(tool_call("extract_pdf_text", {"pdf_path": str(pdf_path)})),
+            response_with(
+                tool_call(
+                    "append_maintenance_csv",
+                    {
+                        "generator_name": "한빛복합 2호기",
+                        "maintenance_start": "2026-10-14 09:00",
+                        "maintenance_end": "2026-10-16 18:00",
+                        "source_pdf": "notice.pdf",
+                    },
+                )
+            ),
+            response_with(content="CSV 저장을 완료했습니다."),
+        ]
+    )
+
+    succeeded = run_agent_for_pdf(
+        pdf_path=pdf_path,
+        input_dir=tmp_path,
+        csv_path=csv_path,
+        model="test-model",
+        auto=True,
+        chat_fn=fake_chat,
+    )
+
+    assert succeeded is True
+    assert len(fake_chat.calls) == 3
+    tool_messages = [
+        message
+        for message in fake_chat.calls[-1]["messages"]
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    assert [message["tool_name"] for message in tool_messages] == [
+        "extract_pdf_text",
+        "append_maintenance_csv",
+    ]
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["generator_name"] == "한빛복합 2호기"
+    assert rows[0]["maintenance_start"] == "2026-10-14 09:00"
+    assert rows[0]["maintenance_end"] == "2026-10-16 18:00"
+
+
+def test_main_rejects_missing_input_directory(tmp_path: Path, capsys) -> None:
+    exit_code = main([str(tmp_path / "missing"), "--auto"])
+
+    assert exit_code == 2
+    assert "입력 폴더" in capsys.readouterr().out
+
+
+def test_main_rejects_empty_input_directory(tmp_path: Path, capsys) -> None:
+    exit_code = main([str(tmp_path), "--auto"])
+
+    assert exit_code == 1
+    assert "PDF" in capsys.readouterr().out
+    assert not (tmp_path / "output" / "maintenance_schedule.csv").exists()
