@@ -14,6 +14,7 @@ from ollama import ResponseError, chat
 from pypdf import PdfReader
 
 
+# STEP 1. 모델, 출력 양식, 에이전트 규칙을 정의합니다.
 DEFAULT_MODEL = "qwen3:4b"
 DATETIME_FORMAT = "%Y-%m-%d %H:%M"
 CSV_HEADERS = [
@@ -42,6 +43,7 @@ def pause_for_user(auto: bool, message: str) -> None:
         input(f"\n[Enter] {message}")
 
 
+# STEP 2. 에이전트가 사용할 PDF 읽기 툴의 실제 동작입니다.
 def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object]:
     """Extract page-marked text from one PDF inside the allowed directory."""
     allowed_dir = allowed_input_dir.resolve()
@@ -82,6 +84,7 @@ def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object
     }
 
 
+# STEP 3. 에이전트가 사용할 CSV 쓰기 툴의 실제 동작입니다.
 def append_maintenance_csv(
     csv_path: Path,
     allowed_sources: set[str],
@@ -179,6 +182,7 @@ def _print_tool_result(tool_name: str, result_text: str) -> None:
     print(f"[툴 결과] {result.get('error', result_text)}")
 
 
+# STEP 4. 모델이 툴을 고르고 결과를 다시 관찰하는 에이전트 반복문입니다.
 def run_agent_for_pdf(
     pdf_path: Path,
     input_dir: Path,
@@ -324,6 +328,7 @@ def run_agent_for_pdf(
     return False
 
 
+# STEP 5. 폴더의 PDF를 모아 하나씩 에이전트에게 맡깁니다.
 def main(argv: list[str] | None = None) -> int:
     """Process every PDF in a directory through the local agent."""
     parser = argparse.ArgumentParser(
