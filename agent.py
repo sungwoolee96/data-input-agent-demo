@@ -333,15 +333,24 @@ def run_agent_for_pdf(
             return saved
 
         for tool_call in tool_calls:
-            tool_name = tool_call.function.name
-            arguments = dict(tool_call.function.arguments or {})
+            function_call = getattr(tool_call, "function", None)
+            raw_tool_name = getattr(function_call, "name", None)
+            raw_arguments = getattr(function_call, "arguments", None)
+            valid_call = isinstance(raw_tool_name, str) and isinstance(raw_arguments, dict)
+            tool_name = raw_tool_name if isinstance(raw_tool_name, str) else "invalid_tool_call"
+            arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
             print(f"\n[툴 호출] {tool_name}")
             print(json.dumps(arguments, ensure_ascii=False, indent=2))
             pause_for_user(auto, "이 툴을 실행합니다...")
 
-            # 모델이 보낸 툴 이름과 인자를 신뢰하지 않고 허용 목록과 함수 시그니처로 확인합니다.
-            function = available_tools.get(tool_name)
-            if function is None:
+            # 모델이 보낸 툴 이름과 인자를 신뢰하지 않고 형식, 허용 목록, 함수 시그니처로 확인합니다.
+            function = available_tools.get(tool_name) if valid_call else None
+            if not valid_call:
+                result_text = json.dumps(
+                    {"status": "error", "error": "툴 호출 형식이 올바르지 않습니다."},
+                    ensure_ascii=False,
+                )
+            elif function is None:
                 result_text = json.dumps(
                     {"status": "error", "error": f"허용되지 않은 툴: {tool_name}"},
                     ensure_ascii=False,
@@ -442,6 +451,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             except ResponseError as exc:
                 print(f"\n[문서 실패] {pdf_path.name}: Ollama 요청 실패: {exc}")
+                continue
+            except Exception:
+                print(f"\n[문서 실패] {pdf_path.name}: 예상하지 못한 오류가 발생했습니다.")
                 continue
 
             if document_succeeded:

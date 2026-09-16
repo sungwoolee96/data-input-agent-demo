@@ -375,6 +375,35 @@ def test_run_agent_for_pdf_cannot_read_a_different_pdf(tmp_path: Path) -> None:
     assert "현재 처리 중인 PDF" in first_tool_result["content"]
 
 
+def test_run_agent_for_pdf_rejects_malformed_tool_arguments(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path)
+    malformed_call = SimpleNamespace(
+        function=SimpleNamespace(name="extract_pdf_text", arguments="not-a-mapping")
+    )
+    fake_chat = FakeChat(
+        [
+            response_with(malformed_call),
+            response_with(content="잘못된 호출이라 저장하지 않았습니다."),
+        ]
+    )
+
+    succeeded = run_agent_for_pdf(
+        pdf_path=pdf_path,
+        input_dir=tmp_path,
+        csv_path=tmp_path / "output.csv",
+        model="test-model",
+        auto=True,
+        chat_fn=fake_chat,
+    )
+
+    assert succeeded is False
+    assert "툴 호출 형식" in capsys.readouterr().out
+
+
 def test_main_rejects_missing_input_directory(tmp_path: Path, capsys) -> None:
     exit_code = main([str(tmp_path / "missing"), "--auto"])
 
@@ -413,6 +442,32 @@ def test_main_continues_after_one_document_connection_failure(
     assert processed == ["a.pdf", "b.pdf"]
     output = capsys.readouterr().out
     assert "a.pdf" in output
+    assert "성공 1개, 실패 1개" in output
+
+
+def test_main_continues_after_one_unexpected_document_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    make_text_pdf(tmp_path / "a.pdf")
+    make_text_pdf(tmp_path / "b.pdf")
+    processed = []
+
+    def fake_run_agent_for_pdf(**kwargs) -> bool:
+        processed.append(kwargs["pdf_path"].name)
+        if kwargs["pdf_path"].name == "a.pdf":
+            raise ValueError("malformed model response")
+        return True
+
+    monkeypatch.setattr("agent.run_agent_for_pdf", fake_run_agent_for_pdf)
+
+    exit_code = main([str(tmp_path), "--auto"])
+
+    assert exit_code == 0
+    assert processed == ["a.pdf", "b.pdf"]
+    output = capsys.readouterr().out
+    assert "예상하지 못한 오류" in output
     assert "성공 1개, 실패 1개" in output
 
 
