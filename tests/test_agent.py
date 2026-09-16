@@ -311,6 +311,102 @@ def test_run_agent_for_pdf_executes_real_tools_in_sequence(tmp_path: Path) -> No
     assert rows[0]["maintenance_end"] == "2026-10-16 18:00"
 
 
+def test_teaching_log_explains_tool_flow_before_each_pause(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path, "Hanbit unit two maintenance notice")
+    csv_path = tmp_path / "maintenance.csv"
+    fake_chat = FakeChat(
+        [
+            response_with(tool_call("extract_pdf_text", {"pdf_path": str(pdf_path)})),
+            response_with(tool_call("append_maintenance_csv", {
+                "generator_name": "한빛복합 2호기",
+                "maintenance_start": "2026-10-14 09:00",
+                "maintenance_end": "2026-10-16 18:00",
+                "source_pdf": "notice.pdf",
+            })),
+            response_with(content="완료"),
+        ]
+    )
+    snapshots = []
+
+    def press_enter(prompt: str) -> str:
+        snapshots.append((prompt, capsys.readouterr().out))
+        return ""
+
+    monkeypatch.setattr("builtins.input", press_enter)
+    assert run_agent_for_pdf(pdf_path, tmp_path, csv_path, "test-model", False, fake_chat)
+
+    first_prompt, first_log = snapshots[0]
+    assert "STEP 4" in first_log
+    assert "직접 읽을 수 없" in first_log
+    assert "모델에 작업" in first_prompt
+    read_prompt, read_log = next(
+        (prompt, log) for prompt, log in snapshots if "이 툴을 실행" in prompt
+    )
+    assert "STEP 2" in read_log
+    assert "extract_pdf_text" in read_log
+    pdf_prompt, pdf_log = next(
+        (prompt, log) for prompt, log in snapshots if "추출 결과" in prompt
+    )
+    assert "아직 CSV" in pdf_log
+    assert "모델" in pdf_prompt
+    write_prompt, write_log = next(
+        (prompt, log) for prompt, log in snapshots if "CSV 쓰기 툴" in prompt
+    )
+    assert "STEP 4" in write_log
+    assert "한빛복합 2호기" in write_log
+    assert "2026-10-14 09:00" in write_log
+    assert "아직 저장되지 않았" in write_log
+    assert "append_maintenance_csv" in write_log
+    saved_log = next(
+        log for prompt, log in snapshots if "툴 결과를 모델" in prompt
+    )
+    assert "STEP 3" in saved_log
+    assert "검증" in saved_log
+    assert "CSV 저장 완료" in saved_log
+
+
+def test_raw_pdf_preview_is_below_learning_flow(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path, "Generator Alpha maintenance")
+    fake_chat = FakeChat([
+        response_with(tool_call("extract_pdf_text", {"pdf_path": str(pdf_path)})),
+        response_with(content="확인 완료"),
+    ])
+    snapshots = []
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: snapshots.append((prompt, capsys.readouterr().out)) or "",
+    )
+
+    run_agent_for_pdf(pdf_path, tmp_path, tmp_path / "out.csv", "test-model", False, fake_chat)
+
+    before_next_model = next(
+        log for prompt, log in snapshots if "추출 결과" in prompt
+    )
+    assert "Generator Alpha maintenance" not in before_next_model
+    final_output = capsys.readouterr().out
+    assert final_output.index("[에이전트 최종 답변]") < final_output.index("[상세 로그")
+    assert "Generator Alpha maintenance" in final_output
+
+
+def test_auto_mode_prints_learning_log_without_enter(tmp_path: Path, capsys) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path)
+    fake_chat = FakeChat([response_with(content="확인할 정보가 없습니다.")])
+
+    run_agent_for_pdf(pdf_path, tmp_path, tmp_path / "out.csv", "test-model", True, fake_chat)
+
+    output = capsys.readouterr().out
+    assert "STEP 4" in output
+    assert "[Enter]" not in output
+    assert "CSV 저장 완료" not in output
+
+
 def test_run_agent_for_pdf_hides_reasoning_prefix_from_final_output(
     tmp_path: Path,
     capsys,
@@ -417,6 +513,43 @@ def test_main_rejects_empty_input_directory(tmp_path: Path, capsys) -> None:
     assert exit_code == 1
     assert "PDF" in capsys.readouterr().out
     assert not (tmp_path / "output" / "maintenance_schedule.csv").exists()
+
+
+def test_main_introduces_files_and_learning_goal_before_processing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    make_text_pdf(tmp_path / "b.pdf")
+    make_text_pdf(tmp_path / "a.pdf")
+    observed = []
+
+    def fake_run_agent_for_pdf(**kwargs) -> bool:
+        observed.append((kwargs["pdf_path"].name, capsys.readouterr().out))
+        return True
+
+    monkeypatch.setattr("agent.run_agent_for_pdf", fake_run_agent_for_pdf)
+    assert main([str(tmp_path), "--auto"]) == 0
+
+    first_output = observed[0][1]
+    assert "agent.py" in first_output
+    assert str(tmp_path.resolve()) in first_output
+    assert "1. a.pdf" in first_output
+    assert "2. b.pdf" in first_output
+    assert "maintenance_schedule.csv" in first_output
+    assert "Enter" in first_output
+    assert "자율적으로" in first_output
+    assert "PDF를 열어" in first_output
+    assert first_output.index("1. a.pdf") < first_output.index("2. b.pdf")
+
+
+def test_main_handles_interrupt_at_new_intro_pause(tmp_path: Path, monkeypatch, capsys) -> None:
+    make_text_pdf(tmp_path / "notice.pdf")
+
+    def interrupt(_prompt: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert main([str(tmp_path)]) == 130
+    assert "[중단]" in capsys.readouterr().out
 
 
 def test_main_continues_after_one_document_connection_failure(
