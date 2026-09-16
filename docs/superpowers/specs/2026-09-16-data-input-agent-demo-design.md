@@ -18,7 +18,7 @@ The primary audience is a Python beginner who wants to see an agent use tools wi
 - Run inference locally with Ollama and `qwen3:4b`.
 - Keep all executable application logic in one readable `agent.py` file.
 - Make setup and execution reproducible with uv.
-- Publish the completed repository publicly as `data-input-agent-demo` under the user's personal GitHub account.
+- Publish the completed repository publicly as `sungwoolee96/data-input-agent-demo`.
 
 ## Non-goals
 
@@ -260,7 +260,7 @@ If the local model cannot be executed in the build environment, deterministic to
 
 The project is complete when:
 
-- The public repository is named `data-input-agent-demo`.
+- The public repository URL is `https://github.com/sungwoolee96/data-input-agent-demo`.
 - The local Desktop checkout contains the same committed state as the public `main` branch.
 - A learner can follow the README without needing unstated setup knowledge.
 - All application logic remains in one approachable `agent.py` file.

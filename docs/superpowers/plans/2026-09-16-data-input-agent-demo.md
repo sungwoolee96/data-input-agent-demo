@@ -254,7 +254,7 @@ git commit -m "docs: add local agent learning guide"
 - Generate but do not commit: `output/maintenance_schedule.csv`
 
 **Interfaces:**
-- Public GitHub repository: `data-input-agent-demo`
+- Public GitHub repository: `https://github.com/sungwoolee96/data-input-agent-demo`
 - Final local checkout: `%USERPROFILE%\Desktop\data-input-agent-demo`
 
 - [ ] **Step 1: Run clean deterministic verification**
@@ -298,4 +298,4 @@ Use the finishing-development-branch workflow, merge the verified feature branch
 
 - [ ] **Step 8: Publish and create the requested Desktop checkout**
 
-Confirm GitHub CLI authentication and that the target repository does not already exist. Create `data-input-agent-demo` as a public repository from verified `main` and push. Clone the public repository to `%USERPROFILE%\Desktop\data-input-agent-demo`, then verify its `HEAD` matches `origin/main` and the working tree is clean.
+Confirm GitHub CLI authentication for `sungwoolee96` and that `sungwoolee96/data-input-agent-demo` does not already exist. Create it as a public repository from verified `main` and push. Clone the public repository to `%USERPROFILE%\Desktop\data-input-agent-demo`, then verify its `HEAD` matches `origin/main` and the working tree is clean.
