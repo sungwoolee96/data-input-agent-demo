@@ -1,4 +1,6 @@
 import csv
+import io
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -251,15 +253,84 @@ def response_with(*calls: SimpleNamespace, content: str = "") -> SimpleNamespace
 
 
 class FakeChat:
-    def __init__(self, responses: list[SimpleNamespace]) -> None:
+    def __init__(self, responses: list[SimpleNamespace | list[SimpleNamespace]]) -> None:
         self.responses = list(responses)
         self.calls: list[dict] = []
 
-    def __call__(self, **kwargs) -> SimpleNamespace:
+    def __call__(self, **kwargs):
         captured = dict(kwargs)
         captured["messages"] = list(kwargs["messages"])
         self.calls.append(captured)
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        return iter(response if isinstance(response, list) else [response])
+
+
+def streamed_chunk(*calls: SimpleNamespace, thinking: str = "", content: str = "") -> SimpleNamespace:
+    return SimpleNamespace(
+        message=SimpleNamespace(
+            role="assistant", thinking=thinking, content=content, tool_calls=list(calls)
+        )
+    )
+
+
+def test_streamed_thinking_is_transient_and_tool_calls_still_run(tmp_path: Path, capsys) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path, "Hanbit unit two maintenance notice")
+    csv_path = tmp_path / "maintenance.csv"
+    fake_chat = FakeChat([
+        [
+            streamed_chunk(thinking="Read the"),
+            streamed_chunk(
+                tool_call("extract_pdf_text", {"pdf_path": str(pdf_path)}),
+                thinking=" PDF first",
+            ),
+        ],
+        [
+            streamed_chunk(thinking="Extract dates"),
+            streamed_chunk(tool_call("append_maintenance_csv", {
+                "generator_name": "한빛복합 2호기",
+                "maintenance_start": "2026-10-14 09:00",
+                "maintenance_end": "2026-10-16 18:00",
+                "source_pdf": "notice.pdf",
+            })),
+        ],
+        [streamed_chunk(content="저장"), streamed_chunk(content=" 완료")],
+    ])
+
+    assert run_agent_for_pdf(pdf_path, tmp_path, csv_path, "test-model", True, fake_chat)
+
+    assert all(call["stream"] is True and call["think"] is True for call in fake_chat.calls)
+    assistant_message = fake_chat.calls[1]["messages"][2]
+    assert assistant_message.thinking == "Read the PDF first"
+    assert assistant_message.tool_calls[0].function.name == "extract_pdf_text"
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        assert len(list(csv.DictReader(handle))) == 1
+    output = capsys.readouterr().out
+    assert "Read the PDF first" not in output
+    assert "[에이전트 최종 답변] 저장 완료" in output
+
+
+def test_live_thinking_line_is_cleared_after_model_reply(tmp_path: Path, monkeypatch) -> None:
+    class TtyBuffer(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    pdf_path = tmp_path / "notice.pdf"
+    make_text_pdf(pdf_path)
+    output = TtyBuffer()
+    fake_chat = FakeChat([[
+        streamed_chunk(thinking="Checking the notice"),
+        streamed_chunk(content="확인 완료"),
+    ]])
+
+    monkeypatch.setattr("sys.stdout", output)
+    run_agent_for_pdf(pdf_path, tmp_path, tmp_path / "out.csv", "test-model", True, fake_chat)
+
+    written = output.getvalue()
+    assert "Checking the notice" in written
+    assert "\r" in written
+    assert re.search(r"\r {20,}\r", written)
+    assert "[에이전트 최종 답변] 확인 완료" in written
 
 
 def test_run_agent_for_pdf_executes_real_tools_in_sequence(tmp_path: Path) -> None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -217,6 +219,71 @@ def _visible_model_content(content: str) -> str:
     return content.strip()
 
 
+def _call_model_with_preview(
+    call_model: Callable[..., object], model: str, messages: list[object], tools: list[object]
+) -> object:
+    """Collect one streamed reply while showing a temporary terminal preview."""
+    # [예제와 무관합니다, 무시해주세요] 모델이 답하는 동안 한 줄만 갱신하고 완료되면 지웁니다.
+    terminal = sys.stdout.isatty()
+    shown_width = 0
+
+    def display_width(value: str) -> int:
+        return sum(2 if unicodedata.east_asian_width(char) in "FW" else 1 for char in value)
+
+    def show(value: str) -> None:
+        nonlocal shown_width
+        width = display_width(value)
+        sys.stdout.write("\r" + value + " " * max(0, shown_width - width))
+        sys.stdout.flush()
+        shown_width = max(shown_width, width)
+
+    if terminal:
+        sys.stdout.write("\n")
+        show("[모델] 로컬 언어 모델 추론 중...")
+    else:
+        print("\n[모델] 로컬 언어 모델 추론 중...", flush=True)
+
+    thinking_parts: list[str] = []
+    content_parts: list[str] = []
+    tool_calls: list[object] = []
+    thought_tail = ""
+    message = None
+    try:
+        stream = call_model(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+            think=True,
+            options={"temperature": 0},
+        )
+        for chunk in stream:
+            message = chunk.message
+            thinking = getattr(message, "thinking", None) or ""
+            if thinking:
+                thinking_parts.append(thinking)
+                thought_tail = (thought_tail + thinking)[-100:]
+                if terminal:
+                    visible = " ".join(
+                        "".join(char for char in thought_tail if char.isprintable() or char.isspace()).split()
+                    )[-24:]
+                    if visible:
+                        show(f"[모델 생각] {visible}")
+            content_parts.append(message.content or "")
+            tool_calls.extend(message.tool_calls or [])
+    finally:
+        if terminal:
+            sys.stdout.write("\r" + " " * shown_width + "\r")
+            sys.stdout.flush()
+
+    if message is None:
+        raise ValueError("모델이 빈 스트림을 반환했습니다.")
+    message.thinking = "".join(thinking_parts)
+    message.content = "".join(content_parts)
+    message.tool_calls = tool_calls
+    return message
+
+
 # STEP 4. 모델의 선택과 Python의 툴 실행을 실제로 연결하는 부분입니다.
 # 모델에 목표와 툴을 제공하고, 모델이 선택한 툴을 실행한 뒤 결과를 다시 모델에 전달합니다.
 # 모델은 각 단계의 결과를 프롬프트로 받아본 다음 행동을 정합니다. 이 구조가 본 예제의 에이전틱 구조의 핵심입니다.
@@ -328,15 +395,7 @@ def run_agent_for_pdf(
     # 아래에서 툴을 실행하고 결과를 기록하면 다음 턴의 모델이 그 결과를 보고 이어서 판단합니다.
     # MAX_AGENT_TURNS는 이 과정을 끝없이 반복하지 않도록 제한합니다.
     for _turn in range(MAX_AGENT_TURNS):
-        print("\n[모델] 로컬 언어 모델 추론 중...", flush=True)
-        response = call_model(
-            model=model,
-            messages=messages,
-            tools=tool_list,
-            think=False,
-            options={"temperature": 0},
-        )
-        message = response.message
+        message = _call_model_with_preview(call_model, model, messages, tool_list)
         messages.append(message)
         tool_calls = message.tool_calls or []
 
