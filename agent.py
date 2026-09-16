@@ -217,15 +217,6 @@ def _visible_model_content(content: str) -> str:
     return content.strip()
 
 
-def print_document_details(details: list[str]) -> None:
-    """Show bounded tool details after the learning narrative ends."""
-    # [예제와 무관합니다, 무시해주세요] 긴 원문과 인자는 문서 처리 후에 모아 보여줍니다.
-    if details:
-        print("\n아래는 본 에이전트가 전체 과정을 수행하면서 생성한 로그입니다.")
-        print("\n[상세 로그 | 도구 인자와 PDF 원문 미리보기]")
-        print("\n\n".join(details))
-
-
 # STEP 4. 모델의 선택과 Python의 툴 실행을 실제로 연결하는 부분입니다.
 # 모델에 목표와 툴을 제공하고, 모델이 선택한 툴을 실행한 뒤 결과를 다시 모델에 전달합니다.
 # 모델은 각 단계의 결과를 프롬프트로 받아본 다음 행동을 정합니다. 이 구조가 본 예제의 에이전틱 구조의 핵심입니다.
@@ -242,7 +233,6 @@ def run_agent_for_pdf(
     current_pdf = pdf_path.resolve()
     state: dict[str, str | None] = {"extracted_source": None}
     saved = False
-    details: list[str] = []
 
     # STEP 2·3의 함수를 모델이 선택할 수 있는 툴 형태로 연결합니다.
     # Ollama는 아래 함수의 이름·설명·인자를 모델에 알려주고, 모델은 호출할 툴과 인자만 제안합니다.
@@ -354,7 +344,6 @@ def run_agent_for_pdf(
         if not tool_calls:
             final_text = _visible_model_content(message.content or "")
             print(f"\n[에이전트 최종 답변] {final_text or '응답 없음'}")
-            print_document_details(details)
             return saved
 
         for tool_call in tool_calls:
@@ -384,11 +373,10 @@ def run_agent_for_pdf(
                 print("CSV 쓰기 툴은 이 값이 요구사항에 맞는지 검증한 뒤 저장합니다.")
             else:
                 print(f"\n[툴 호출] {tool_name}")
-            details.append(f"{tool_name} 인자:\n{json.dumps(arguments, ensure_ascii=False, indent=2)}")
             if tool_name == "append_maintenance_csv" and valid_call:
                 pause_for_user(auto, "append_maintenance_csv CSV 쓰기 툴을 실행합니다...")
             else:
-                pause_for_user(auto, "이 툴을 실행합니다...")
+                pause_for_user(auto, "툴이 실행됩니다...")
 
             # 모델이 보낸 툴 이름과 인자를 신뢰하지 않고 형식, 허용 목록, 함수 시그니처로 확인합니다.
             function = available_tools.get(tool_name) if valid_call else None
@@ -431,11 +419,10 @@ def run_agent_for_pdf(
                 preview = str(result_data["text"])
                 if len(preview) > 1200:
                     preview = preview[:1200].rstrip() + "\n... (이하 생략)"
-                details.append(f"PDF 텍스트 미리보기:\n{preview}")
                 print("\n추출된 내용은 아래와 같습니다:")
                 print(preview)
                 print("\n에이전트가 호출한 툴을 통해 PDF 내용이 텍스트로 추출됐습니다.")
-                print("이제 로컬 언어 모델은 이 내용에서 발전기와 정비 기간을 해석합니다.")
+                print("이제 로컬 언어 모델은 이 내용을 주입받아 발전기와 정비 기간을 해석합니다.")
             elif tool_name == "append_maintenance_csv" and result_data.get("status") in {
                 "saved", "duplicate"
             }:
@@ -444,7 +431,7 @@ def run_agent_for_pdf(
                 if result_data["status"] == "saved":
                     print(f"검증된 결과가 CSV에 저장됐습니다: {csv_path}")
                 else:
-                    print("이미 동일한 결과가 있어 새 행을 추가하지 않았습니다.")
+                    print("이미 maintenance_schedule.csv 파일에 동일한 결과 행이 있어 새 행을 추가하지 않았습니다.")
             elif tool_name == "append_maintenance_csv":
                 print("CSV 쓰기 툴의 검증을 통과하지 못해 저장하지 않았습니다.")
 
@@ -462,7 +449,6 @@ def run_agent_for_pdf(
                 pause_for_user(auto, "툴 결과를 모델에 전달합니다...")
 
     print(f"[오류] 최대 에이전트 반복 횟수({MAX_AGENT_TURNS})를 초과했습니다.")
-    print_document_details(details)
     return False
 
 
@@ -511,20 +497,23 @@ def main(argv: list[str] | None = None) -> int:
     for number, pdf_path in enumerate(pdf_files, start=1):
         print(f"  {number}. {pdf_path.name}")
     print(f"결과 CSV: {csv_path}")
-    print("먼저 agent.py 스크립트와 첫 번째 PDF를 열어 확인해보세요.")
+    print("agent.py 스크립트와 첫 번째 PDF를 참고하며 학습해보세요")
+    print()
     print("지금은 학습을 위해 행동 사이를 Enter로 명시적으로 나누어 보여줍니다.")
-    print("잘 설계된 에이전틱 시스템의 목표는 이러한 판단과 툴 사용을 자율적으로 이어가는 것입니다.")
-    print("\n[모델에 전달하는 공통 규칙 | 코드 STEP 1]")
+    print("실제 사용 시 이러한 과정들은 자동으로 진행됩니다.")
+    print("\n[프롬프트 정의 | 코드 STEP 1]")
+    print("언어 모델에 아래와 같은 프롬프트가 주입됩니다.")
+    print()
     print(SYSTEM_PROMPT.strip())
     if args.auto:
         print("--auto 모드에서는 같은 학습 설명을 표시하지만 Enter 대기는 생략합니다.")
 
     succeeded = 0
     try:
-        pause_for_user(args.auto, "준비되었다면 첫 번째 문서를 처리합니다...")
+        pause_for_user(args.auto, "첫 번째 문서를 처리하는 예시로 진행합니다...")
         for number, pdf_path in enumerate(pdf_files, start=1):
             if number == 2:
-                print("\n이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우입니다.")
+                print("\n이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우의 예제입니다.")
             try:
                 document_succeeded = run_agent_for_pdf(
                     pdf_path=pdf_path,

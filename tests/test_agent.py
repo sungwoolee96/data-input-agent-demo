@@ -345,7 +345,7 @@ def test_teaching_log_explains_tool_flow_before_each_pause(
     assert "PDF를 읽어" in first_log
     assert "모델에 작업" in first_prompt
     read_prompt, read_log = next(
-        (prompt, log) for prompt, log in snapshots if "이 툴을 실행" in prompt
+        (prompt, log) for prompt, log in snapshots if "툴이 실행됩니다" in prompt
     )
     assert "STEP 2" in read_log
     assert "extract_pdf_text" in read_log
@@ -376,7 +376,7 @@ def test_teaching_log_explains_tool_flow_before_each_pause(
     assert "CSV 저장 완료" in saved_log
 
 
-def test_raw_pdf_text_is_shown_before_model_reads_it_and_details_are_explained(
+def test_raw_pdf_text_is_shown_before_model_reads_it_without_duplicate_details(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     pdf_path = tmp_path / "notice.pdf"
@@ -399,9 +399,9 @@ def test_raw_pdf_text_is_shown_before_model_reads_it_and_details_are_explained(
     assert "추출된 내용은 아래와 같습니다" in before_next_model
     assert "Generator Alpha maintenance" in before_next_model
     final_output = capsys.readouterr().out
-    assert final_output.index("[에이전트 최종 답변]") < final_output.index("[상세 로그")
-    assert "아래는 본 에이전트가 전체 과정을 수행하면서 생성한 로그입니다." in final_output
-    assert "Generator Alpha maintenance" in final_output
+    assert "[에이전트 최종 답변]" in final_output
+    assert "[상세 로그" not in final_output
+    assert "PDF 텍스트 미리보기" not in final_output
 
 
 def test_model_progress_is_visible_before_each_slow_call(tmp_path: Path, capsys) -> None:
@@ -565,13 +565,14 @@ def test_main_introduces_files_and_learning_goal_before_processing(
     assert "2. b.pdf" in first_output
     assert "maintenance_schedule.csv" in first_output
     assert "Enter" in first_output
-    assert "자율적으로" in first_output
-    assert "PDF를 열어" in first_output
-    assert "[모델에 전달하는 공통 규칙" in first_output
+    assert "agent.py 스크립트와 첫 번째 PDF를 참고하며 학습해보세요" in first_output
+    assert "실제 사용 시 이러한 과정들은 자동으로 진행됩니다." in first_output
+    assert "[프롬프트 정의 | 코드 STEP 1]" in first_output
+    assert "언어 모델에 아래와 같은 프롬프트가 주입됩니다." in first_output
     assert "반드시 extract_pdf_text로 PDF 원문을 읽은 뒤 판단합니다." in first_output
     assert first_output.index("1. a.pdf") < first_output.index("2. b.pdf")
-    assert "이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우입니다." not in first_output
-    assert "이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우입니다." in observed[1][1]
+    assert "이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우의 예제입니다." not in first_output
+    assert "이번에는 완전히 동일한 에이전트가 전혀 다른 형식의 문서를 입력으로 받는 경우의 예제입니다." in observed[1][1]
     assert "[인사이트]" in capsys.readouterr().out
 
 
