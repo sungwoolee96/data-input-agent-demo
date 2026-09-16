@@ -319,7 +319,7 @@ def test_live_thinking_line_is_cleared_after_model_reply(tmp_path: Path, monkeyp
     make_text_pdf(pdf_path)
     output = TtyBuffer()
     fake_chat = FakeChat([[
-        streamed_chunk(thinking="Checking the notice"),
+        streamed_chunk(thinking="A" + "B" * 50),
         streamed_chunk(content="확인 완료"),
     ]])
 
@@ -327,7 +327,8 @@ def test_live_thinking_line_is_cleared_after_model_reply(tmp_path: Path, monkeyp
     run_agent_for_pdf(pdf_path, tmp_path, tmp_path / "out.csv", "test-model", True, fake_chat)
 
     written = output.getvalue()
-    assert "Checking the notice" in written
+    assert "[모델 생각] " + "B" * 50 in written
+    assert "[모델 생각] A" not in written
     assert "\r" in written
     assert re.search(r"\r {20,}\r", written)
     assert "[에이전트 최종 답변] 확인 완료" in written

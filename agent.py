@@ -266,7 +266,7 @@ def _call_model_with_preview(
                 if terminal:
                     visible = " ".join(
                         "".join(char for char in thought_tail if char.isprintable() or char.isspace()).split()
-                    )[-24:]
+                    )[-50:]
                     if visible:
                         show(f"[모델 생각] {visible}")
             content_parts.append(message.content or "")
