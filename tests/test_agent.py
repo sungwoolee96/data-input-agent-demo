@@ -2,6 +2,7 @@ import csv
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from reportlab.pdfgen import canvas
 
 from agent import (
@@ -265,3 +266,30 @@ def test_main_rejects_empty_input_directory(tmp_path: Path, capsys) -> None:
     assert exit_code == 1
     assert "PDF" in capsys.readouterr().out
     assert not (tmp_path / "output" / "maintenance_schedule.csv").exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_fragments"),
+    [
+        (
+            "maintenance_notice_a.pdf",
+            ["한빛복합 2호기", "2026년 10월 14일 09시", "2026년 10월 16일 18시"],
+        ),
+        (
+            "maintenance_notice_b.pdf",
+            ["제주내연 3호기", "2026.11.02 08:30", "2026.11.04 17:30"],
+        ),
+    ],
+)
+def test_sample_pdf_contains_expected_extractable_facts(
+    filename: str,
+    expected_fragments: list[str],
+) -> None:
+    samples_dir = Path(__file__).resolve().parents[1] / "samples"
+
+    result = extract_pdf_text(str(samples_dir / filename), samples_dir)
+
+    assert result["status"] == "ok"
+    assert result["page_count"] >= 1
+    for fragment in expected_fragments:
+        assert fragment in result["text"]
