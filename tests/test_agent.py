@@ -162,6 +162,64 @@ def test_append_maintenance_csv_skips_exact_duplicate(tmp_path: Path) -> None:
         assert len(list(csv.DictReader(handle))) == 1
 
 
+def test_append_maintenance_csv_rejects_second_record_for_same_source(tmp_path: Path) -> None:
+    csv_path = tmp_path / "maintenance_schedule.csv"
+    append_maintenance_csv(
+        csv_path,
+        {"notice.pdf"},
+        "한빛복합 2호기",
+        "2026-10-14 09:00",
+        "2026-10-16 18:00",
+        "notice.pdf",
+    )
+
+    result = append_maintenance_csv(
+        csv_path,
+        {"notice.pdf"},
+        "다른 발전기",
+        "2026-10-20 09:00",
+        "2026-10-21 18:00",
+        "notice.pdf",
+    )
+
+    assert result["status"] == "error"
+    assert "이미" in result["error"]
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        assert len(list(csv.DictReader(handle))) == 1
+
+
+def test_append_maintenance_csv_initializes_empty_file(tmp_path: Path) -> None:
+    csv_path = tmp_path / "maintenance_schedule.csv"
+    csv_path.touch()
+
+    result = append_maintenance_csv(
+        csv_path,
+        {"notice.pdf"},
+        "한빛복합 2호기",
+        "2026-10-14 09:00",
+        "2026-10-16 18:00",
+        "notice.pdf",
+    )
+
+    assert result["status"] == "saved"
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        assert len(list(csv.DictReader(handle))) == 1
+
+
+def test_append_maintenance_csv_rejects_non_string_model_values(tmp_path: Path) -> None:
+    result = append_maintenance_csv(
+        tmp_path / "maintenance_schedule.csv",
+        {"notice.pdf"},
+        None,  # type: ignore[arg-type]
+        "2026-10-14 09:00",
+        "2026-10-16 18:00",
+        "notice.pdf",
+    )
+
+    assert result["status"] == "error"
+    assert "문자열" in result["error"]
+
+
 def test_pause_for_user_waits_in_teaching_mode(monkeypatch) -> None:
     prompts = []
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
@@ -278,6 +336,45 @@ def test_run_agent_for_pdf_hides_reasoning_prefix_from_final_output(
     assert "저장을 완료했습니다." in output
 
 
+def test_run_agent_for_pdf_cannot_read_a_different_pdf(tmp_path: Path) -> None:
+    current_pdf = tmp_path / "current.pdf"
+    other_pdf = tmp_path / "other.pdf"
+    make_text_pdf(current_pdf, "Current generator")
+    make_text_pdf(other_pdf, "Other generator")
+    csv_path = tmp_path / "output.csv"
+    fake_chat = FakeChat(
+        [
+            response_with(tool_call("extract_pdf_text", {"pdf_path": str(other_pdf)})),
+            response_with(
+                tool_call(
+                    "append_maintenance_csv",
+                    {
+                        "generator_name": "다른 발전기",
+                        "maintenance_start": "2026-10-14 09:00",
+                        "maintenance_end": "2026-10-16 18:00",
+                        "source_pdf": "current.pdf",
+                    },
+                )
+            ),
+            response_with(content="완료"),
+        ]
+    )
+
+    succeeded = run_agent_for_pdf(
+        pdf_path=current_pdf,
+        input_dir=tmp_path,
+        csv_path=csv_path,
+        model="test-model",
+        auto=True,
+        chat_fn=fake_chat,
+    )
+
+    assert succeeded is False
+    assert not csv_path.exists()
+    first_tool_result = fake_chat.calls[1]["messages"][-1]
+    assert "현재 처리 중인 PDF" in first_tool_result["content"]
+
+
 def test_main_rejects_missing_input_directory(tmp_path: Path, capsys) -> None:
     exit_code = main([str(tmp_path / "missing"), "--auto"])
 
@@ -291,6 +388,32 @@ def test_main_rejects_empty_input_directory(tmp_path: Path, capsys) -> None:
     assert exit_code == 1
     assert "PDF" in capsys.readouterr().out
     assert not (tmp_path / "output" / "maintenance_schedule.csv").exists()
+
+
+def test_main_continues_after_one_document_connection_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    make_text_pdf(tmp_path / "a.pdf")
+    make_text_pdf(tmp_path / "b.pdf")
+    processed = []
+
+    def fake_run_agent_for_pdf(**kwargs) -> bool:
+        processed.append(kwargs["pdf_path"].name)
+        if kwargs["pdf_path"].name == "a.pdf":
+            raise ConnectionError("temporary failure")
+        return True
+
+    monkeypatch.setattr("agent.run_agent_for_pdf", fake_run_agent_for_pdf)
+
+    exit_code = main([str(tmp_path), "--auto"])
+
+    assert exit_code == 0
+    assert processed == ["a.pdf", "b.pdf"]
+    output = capsys.readouterr().out
+    assert "a.pdf" in output
+    assert "성공 1개, 실패 1개" in output
 
 
 @pytest.mark.parametrize(

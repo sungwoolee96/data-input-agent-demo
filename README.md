@@ -108,7 +108,7 @@ ollama pull qwen3:4b
 
 ## 학습 문서
 
-프로젝트의 맥락, 에이전트·로컬 모델·툴의 역할, 코드 흐름과 LangChain과의 관계는 [`LEARNING.md`](LEARNING.md)에서 설명합니다.
+프로젝트의 맥락, 에이전트·로컬 모델·툴의 역할과 코드 흐름은 [`LEARNING.md`](LEARNING.md)에서 설명합니다.
 
 ## 라이선스
 

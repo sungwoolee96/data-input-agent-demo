@@ -50,6 +50,9 @@ def pause_for_user(auto: bool, message: str) -> None:
 # 모델에 범용 파일 읽기 권한을 주지 않고, 지정 폴더의 PDF만 읽는 좁은 도구를 줍니다.
 def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object]:
     """Extract page-marked text from one PDF inside the allowed directory."""
+    if not isinstance(pdf_path, str):
+        return {"status": "error", "error": "PDF 경로는 문자열이어야 합니다."}
+
     allowed_dir = allowed_input_dir.resolve()
     candidate = Path(pdf_path).resolve()
 
@@ -101,6 +104,10 @@ def append_maintenance_csv(
     source_pdf: str,
 ) -> dict[str, str]:
     """Validate and append one maintenance record to a UTF-8 BOM CSV."""
+    values = (generator_name, maintenance_start, maintenance_end, source_pdf)
+    if not all(isinstance(value, str) for value in values):
+        return {"status": "error", "error": "CSV에 저장할 값은 모두 문자열이어야 합니다."}
+
     generator_name = generator_name.strip()
     maintenance_start = maintenance_start.strip()
     maintenance_end = maintenance_end.strip()
@@ -138,14 +145,20 @@ def append_maintenance_csv(
     }
 
     # 기존 파일의 헤더가 예상과 다르면 덧붙이지 않습니다. 같은 행은 중복 저장하지 않습니다.
-    if csv_path.exists():
+    if csv_path.exists() and csv_path.stat().st_size > 0:
         try:
             with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
                 reader = csv.DictReader(handle)
                 if reader.fieldnames != CSV_HEADERS:
                     return {"status": "error", "error": "기존 CSV의 컬럼 형식이 예상과 다릅니다."}
-                if row in reader:
+                existing_rows = list(reader)
+                if row in existing_rows:
                     return {"status": "duplicate", "source_pdf": source_pdf}
+                if any(existing.get("source_pdf") == source_pdf for existing in existing_rows):
+                    return {
+                        "status": "error",
+                        "error": "이 PDF에는 이미 다른 정비 기록이 저장되어 있습니다.",
+                    }
         except OSError as exc:
             return {"status": "error", "error": f"기존 CSV 읽기 실패: {exc}"}
 
@@ -215,7 +228,8 @@ def run_agent_for_pdf(
     """Run a bounded model-tool loop for one PDF and report write success."""
     # 테스트에서는 가짜 chat 함수를 주입하고, 실제 실행에서는 로컬 Ollama를 사용합니다.
     call_model = chat_fn or chat
-    state = {"pdf_extracted": False}
+    current_pdf = pdf_path.resolve()
+    state: dict[str, str | None] = {"extracted_source": None}
     saved = False
 
     # Ollama가 함수 설명과 인자 형식을 읽을 수 있도록, 실제 툴을 내부 함수로 감쌉니다.
@@ -228,8 +242,16 @@ def run_agent_for_pdf(
         Returns:
             JSON containing page-marked text and extraction metadata.
         """
-        result = extract_pdf_text(pdf_path, input_dir)
-        state["pdf_extracted"] = result.get("status") == "ok"
+        if not isinstance(pdf_path, str) or Path(pdf_path).resolve() != current_pdf:
+            result: dict[str, object] = {
+                "status": "error",
+                "error": "현재 처리 중인 PDF만 읽을 수 있습니다.",
+            }
+        else:
+            result = extract_pdf_text(pdf_path, input_dir)
+        state["extracted_source"] = (
+            str(result["source_pdf"]) if result.get("status") == "ok" else None
+        )
         return json.dumps(result, ensure_ascii=False)
 
     extract_pdf_text_tool.__name__ = "extract_pdf_text"
@@ -252,7 +274,7 @@ def run_agent_for_pdf(
             JSON describing whether the row was saved, duplicated, or rejected.
         """
         # 모델이 순서를 건너뛰더라도 PDF 원문을 읽기 전에는 CSV를 쓸 수 없습니다.
-        if not state["pdf_extracted"]:
+        if state["extracted_source"] != pdf_path.name:
             return json.dumps(
                 {"status": "error", "error": "CSV 저장 전에 PDF 추출 툴을 사용해야 합니다."},
                 ensure_ascii=False,
@@ -327,9 +349,14 @@ def run_agent_for_pdf(
             else:
                 try:
                     result_text = function(**arguments)
-                except TypeError as exc:
+                except TypeError:
                     result_text = json.dumps(
-                        {"status": "error", "error": f"툴 인자 오류: {exc}"},
+                        {"status": "error", "error": "툴 인자 형식이 올바르지 않습니다."},
+                        ensure_ascii=False,
+                    )
+                except Exception:
+                    result_text = json.dumps(
+                        {"status": "error", "error": "툴 실행 중 예상하지 못한 오류가 발생했습니다."},
                         ensure_ascii=False,
                     )
 
@@ -402,22 +429,23 @@ def main(argv: list[str] | None = None) -> int:
     succeeded = 0
     try:
         for pdf_path in pdf_files:
-            if run_agent_for_pdf(
-                pdf_path=pdf_path,
-                input_dir=input_dir,
-                csv_path=csv_path,
-                model=args.model,
-                auto=args.auto,
-            ):
+            try:
+                document_succeeded = run_agent_for_pdf(
+                    pdf_path=pdf_path,
+                    input_dir=input_dir,
+                    csv_path=csv_path,
+                    model=args.model,
+                    auto=args.auto,
+                )
+            except (ConnectError, ConnectionError):
+                print(f"\n[문서 실패] {pdf_path.name}: Ollama에 연결할 수 없습니다.")
+                continue
+            except ResponseError as exc:
+                print(f"\n[문서 실패] {pdf_path.name}: Ollama 요청 실패: {exc}")
+                continue
+
+            if document_succeeded:
                 succeeded += 1
-    except (ConnectError, ConnectionError):
-        print("\n[오류] Ollama에 연결할 수 없습니다. Ollama를 설치하고 실행해 주세요.")
-        print("설치 안내: https://ollama.com/download")
-        return 2
-    except ResponseError as exc:
-        print(f"\n[오류] Ollama 요청 실패: {exc}")
-        print(f"모델이 없다면 실행하세요: ollama pull {args.model}")
-        return 2
     except KeyboardInterrupt:
         print("\n[중단] 사용자가 실행을 중단했습니다. 이미 저장된 행은 유지됩니다.")
         return 130
