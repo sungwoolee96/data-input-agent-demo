@@ -15,6 +15,8 @@ from pypdf import PdfReader
 
 
 # STEP 1. 모델, 출력 양식, 에이전트 규칙을 정의합니다.
+# 이 값들을 파일 위쪽에 모아 두면 학습자가 에이전트의 입력 계약을 먼저 확인하고,
+# 모델이나 출력 양식을 바꿀 때 실행 로직 전체를 찾지 않아도 됩니다.
 DEFAULT_MODEL = "qwen3:4b"
 DATETIME_FORMAT = "%Y-%m-%d %H:%M"
 CSV_HEADERS = [
@@ -39,16 +41,19 @@ SYSTEM_PROMPT = """당신은 발전기 정비 공지 PDF를 정형 데이터로 
 
 def pause_for_user(auto: bool, message: str) -> None:
     """Pause a teaching-mode run until the learner presses Enter."""
+    # 기본 모드는 발표자가 로그를 설명할 시간을 주고, --auto일 때만 멈춤을 건너뜁니다.
     if not auto:
         input(f"\n[Enter] {message}")
 
 
 # STEP 2. 에이전트가 사용할 PDF 읽기 툴의 실제 동작입니다.
+# 모델에 범용 파일 읽기 권한을 주지 않고, 지정 폴더의 PDF만 읽는 좁은 도구를 줍니다.
 def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object]:
     """Extract page-marked text from one PDF inside the allowed directory."""
     allowed_dir = allowed_input_dir.resolve()
     candidate = Path(pdf_path).resolve()
 
+    # 경로를 먼저 정규화한 뒤 입력 폴더 밖으로 나가는 요청을 차단합니다.
     if not candidate.is_relative_to(allowed_dir):
         return {"status": "error", "error": "허용된 입력 폴더 밖의 파일은 읽을 수 없습니다."}
     if candidate.suffix.lower() != ".pdf":
@@ -56,6 +61,7 @@ def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object
     if not candidate.is_file():
         return {"status": "error", "error": "PDF 파일을 찾을 수 없습니다."}
 
+    # pypdf는 페이지의 텍스트 레이어를 읽습니다. 이미지뿐인 스캔 PDF는 OCR이 필요합니다.
     try:
         reader = PdfReader(candidate)
         page_blocks = []
@@ -85,6 +91,7 @@ def extract_pdf_text(pdf_path: str, allowed_input_dir: Path) -> dict[str, object
 
 
 # STEP 3. 에이전트가 사용할 CSV 쓰기 툴의 실제 동작입니다.
+# 언어 모델은 의미를 해석하지만, 날짜 형식과 쓰기 조건은 결정적인 코드로 다시 검증합니다.
 def append_maintenance_csv(
     csv_path: Path,
     allowed_sources: set[str],
@@ -99,6 +106,7 @@ def append_maintenance_csv(
     maintenance_end = maintenance_end.strip()
     source_pdf = source_pdf.strip()
 
+    # 비어 있는 값, 잘못된 출처, 날짜 순서를 차례로 검사해 오염된 행의 저장을 막습니다.
     if not generator_name:
         return {"status": "error", "error": "발전기 이름이 필요합니다."}
     if not maintenance_start or not maintenance_end:
@@ -129,6 +137,7 @@ def append_maintenance_csv(
         "source_pdf": source_pdf,
     }
 
+    # 기존 파일의 헤더가 예상과 다르면 덧붙이지 않습니다. 같은 행은 중복 저장하지 않습니다.
     if csv_path.exists():
         try:
             with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -140,6 +149,7 @@ def append_maintenance_csv(
         except OSError as exc:
             return {"status": "error", "error": f"기존 CSV 읽기 실패: {exc}"}
 
+    # utf-8-sig는 Windows의 스프레드시트 프로그램에서도 한글을 쉽게 열 수 있게 합니다.
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
     try:
@@ -156,6 +166,7 @@ def append_maintenance_csv(
 
 def _print_tool_result(tool_name: str, result_text: str) -> None:
     """Print an observable, bounded view of a tool result."""
+    # 전체 원문을 계속 출력하면 흐름을 보기 어려우므로 PDF는 길이가 제한된 미리보기만 보여줍니다.
     try:
         result = json.loads(result_text)
     except json.JSONDecodeError:
@@ -183,6 +194,7 @@ def _print_tool_result(tool_name: str, result_text: str) -> None:
 
 
 # STEP 4. 모델이 툴을 고르고 결과를 다시 관찰하는 에이전트 반복문입니다.
+# 이 함수가 예제의 핵심입니다. 모델은 다음 행동을 고르고, Python은 허용된 행동만 실행합니다.
 def run_agent_for_pdf(
     pdf_path: Path,
     input_dir: Path,
@@ -192,10 +204,12 @@ def run_agent_for_pdf(
     chat_fn: Callable[..., object] | None = None,
 ) -> bool:
     """Run a bounded model-tool loop for one PDF and report write success."""
+    # 테스트에서는 가짜 chat 함수를 주입하고, 실제 실행에서는 로컬 Ollama를 사용합니다.
     call_model = chat_fn or chat
     state = {"pdf_extracted": False}
     saved = False
 
+    # Ollama가 함수 설명과 인자 형식을 읽을 수 있도록, 실제 툴을 내부 함수로 감쌉니다.
     def extract_pdf_text_tool(pdf_path: str) -> str:
         """Extract text from a PDF in the selected input folder.
 
@@ -228,6 +242,7 @@ def run_agent_for_pdf(
         Returns:
             JSON describing whether the row was saved, duplicated, or rejected.
         """
+        # 모델이 순서를 건너뛰더라도 PDF 원문을 읽기 전에는 CSV를 쓸 수 없습니다.
         if not state["pdf_extracted"]:
             return json.dumps(
                 {"status": "error", "error": "CSV 저장 전에 PDF 추출 툴을 사용해야 합니다."},
@@ -244,11 +259,13 @@ def run_agent_for_pdf(
         return json.dumps(result, ensure_ascii=False)
 
     append_maintenance_csv_tool.__name__ = "append_maintenance_csv"
+    # 이 허용 목록에 없는 이름은 모델이 요청해도 실행하지 않습니다.
     available_tools = {
         "extract_pdf_text": extract_pdf_text_tool,
         "append_maintenance_csv": append_maintenance_csv_tool,
     }
     tool_list = list(available_tools.values())
+    # 대화 기록에는 목표뿐 아니라 매 툴 결과도 누적됩니다. 모델은 다음 턴에 그 결과를 관찰합니다.
     messages: list[object] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -265,6 +282,7 @@ def run_agent_for_pdf(
     print(f"[문서] {pdf_path.name}")
     pause_for_user(auto, "로컬 모델에 작업을 전달합니다...")
 
+    # 무한 반복을 막기 위해 턴 수를 제한한 작은 에이전트 루프입니다.
     for _turn in range(MAX_AGENT_TURNS):
         response = call_model(
             model=model,
@@ -277,6 +295,7 @@ def run_agent_for_pdf(
         messages.append(message)
         tool_calls = message.tool_calls or []
 
+        # 툴 호출이 없는 응답은 모델이 작업을 끝냈다는 신호로 사용합니다.
         if not tool_calls:
             final_text = (message.content or "").strip()
             print(f"\n[에이전트 최종 답변] {final_text or '응답 없음'}")
@@ -289,6 +308,7 @@ def run_agent_for_pdf(
             print(json.dumps(arguments, ensure_ascii=False, indent=2))
             pause_for_user(auto, "이 툴을 실행합니다...")
 
+            # 모델이 보낸 툴 이름과 인자를 신뢰하지 않고 허용 목록과 함수 시그니처로 확인합니다.
             function = available_tools.get(tool_name)
             if function is None:
                 result_text = json.dumps(
@@ -315,6 +335,7 @@ def run_agent_for_pdf(
             }:
                 saved = True
 
+            # 실행 결과를 tool 메시지로 넣어야 모델이 성공/오류를 보고 다음 행동을 정할 수 있습니다.
             messages.append(
                 {
                     "role": "tool",
@@ -329,6 +350,7 @@ def run_agent_for_pdf(
 
 
 # STEP 5. 폴더의 PDF를 모아 하나씩 에이전트에게 맡깁니다.
+# 명령행 옵션을 읽고 입력을 검증하는 바깥쪽 흐름이며, PDF마다 대화 상태를 새로 시작합니다.
 def main(argv: list[str] | None = None) -> int:
     """Process every PDF in a directory through the local agent."""
     parser = argparse.ArgumentParser(
@@ -352,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[오류] 입력 폴더를 찾을 수 없습니다: {input_dir}")
         return 2
 
+    # 실행 순서를 예측할 수 있도록 파일명을 기준으로 정렬합니다.
     pdf_files = sorted(
         (path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"),
         key=lambda path: path.name.lower(),
@@ -366,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"입력 PDF: {len(pdf_files)}개")
     print(f"출력 CSV: {csv_path}")
 
+    # 한 PDF의 실패가 이미 저장된 다른 결과를 지우지 않도록 문서별 성공 수를 집계합니다.
     succeeded = 0
     try:
         for pdf_path in pdf_files:
