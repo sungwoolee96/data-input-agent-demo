@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.uv-cache/
+*.py[cod]
+output/*.csv
+tmp/
+rendered/
